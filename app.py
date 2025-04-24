@@ -1,78 +1,109 @@
 import streamlit as st
 import pytesseract
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image
 import fitz  # PyMuPDF for PDF text extraction
 import io
 import docx
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
-from pptx import Presentation
-from pptx.util import Inches
-import pandas as pd
-import os
-import re
-from dotenv import load_dotenv
-from transformers import pipeline
-import spacy!~~
 
-# Load environment variables from .env file!~
-load_dotenv()
+import pandas as pd
+import re
+import spacy
+from spacy.cli import download
+from transformers import pipeline, GPT2LMHeadModel, GPT2Tokenizer
+import streamlit as st
+
+
+# Function to ensure the SpaCy model is downloaded
+def ensure_spacy_model():
+    try:
+        # Try loading the SpaCy model
+        nlp = spacy.load("en_core_web_sm")
+    except OSError:
+        # If not found, download it
+        download("en_core_web_sm")
+        nlp = spacy.load("en_core_web_sm")
+    return nlp
 
 # Initialize spaCy model
-nlp = spacy.load("en_core_web_sm")
+nlp = ensure_spacy_model()
 
-# Initialize Hugging Face summarization pipeline
-summarizer = pipeline("summarization")
+# Initialize GPT-2 text generation pipeline
+generator = pipeline("text-generation", model="gpt2")
 
-# Retrieve the API key from environment variable
-api_key = os.getenv('OPENAI_API_KEY')
+# Define a simple summarization function (can be customized)
+def simple_summarize(text):
+    sentences = text.split('. ')
+    summary = '. '.join(sentences[:2])  # Just take the first two sentences as a summary
+    return summary
 
-if not api_key:
-    st.error("API key is not set. Please set the 'OPENAI_API_KEY' environment variable.")
-    st.stop()
-
-# Define the function to extract bibliography information using regex
+# Function to extract bibliography information using regex
 def extract_bibliography_info(text):
-    # Initialize default values
     bibliography_info = {
         'title': '',
         'author': '',
         'year': ''
     }
-
-    # Clean and preprocess text
+    
     text = text.strip().replace('\n', ' ').replace('  ', ' ')
-
-    # Regex patterns to extract bibliographic information
-    author_pattern = re.compile(r'by\s*([A-Z][a-zA-Z\s,]+)', re.IGNORECASE)
+    
+    # Attempt to match title, author, and year using improved regex patterns
+    author_pattern = re.compile(r'(?:by\s+|written\s+by\s+|author\s+)\s*([A-Z][a-zA-Z\s,]+)', re.IGNORECASE)
     year_pattern = re.compile(r'\b(\d{4})\b')
-    title_pattern = re.compile(r'“([^”]+)”|“([^”]+)”')
-
-    # Extract author
+    title_pattern = re.compile(r'([A-Z][a-zA-Z\s]+(?:[a-zA-Z])+)')  # Refined title pattern
+    
+    # Attempt matching for author
     author_match = author_pattern.search(text)
     if author_match:
         bibliography_info['author'] = author_match.group(1).strip()
-
-    # Extract year
+    
+    # Attempt matching for year
     year_match = year_pattern.search(text)
     if year_match:
         bibliography_info['year'] = year_match.group(0).strip()
-
-    # Extract title
+    
+    # Attempt matching for title
     title_match = title_pattern.search(text)
     if title_match:
-        bibliography_info['title'] = title_match.group(1).strip() or title_match.group(2).strip()
+        bibliography_info['title'] = title_match.group(0).strip()
 
+    # If no matches are found, attempt NLP processing for a better approach
+    if not bibliography_info['author']:
+        bibliography_info['author'] = extract_author_from_nlp(text)
+    
+    if not bibliography_info['year']:
+        bibliography_info['year'] = extract_year_from_nlp(text)
+    
+    if not bibliography_info['title']:
+        bibliography_info['title'] = extract_title_from_nlp(text)
+    
     return bibliography_info
 
-# Function to summarize text using Hugging Face
-def summarize_text(text):
-    try:
-        summary = summarizer(text, max_length=150, min_length=30, do_sample=False)
-        return summary[0]['summary_text']
-    except Exception as e:
-        st.error(f"Error summarizing text: {e}")
-        return ""
+# Function to extract author using NLP
+def extract_author_from_nlp(text):
+    doc = nlp(text)
+    for ent in doc.ents:
+        if ent.label_ == "PERSON":
+            return ent.text
+    return ''
+
+# Function to extract year using NLP
+def extract_year_from_nlp(text):
+    doc = nlp(text)
+    for ent in doc.ents:
+        if ent.label_ == "DATE":
+            return ent.text[-4:]  # Extract year
+    return ''
+
+# Function to extract title using NLP
+def extract_title_from_nlp(text):
+    doc = nlp(text)
+    sentences = text.split('. ')
+    # Heuristic: First sentence is often the title
+    if len(sentences) > 0:
+        return sentences[0]
+    return ''
 
 # Function to extract text from an image
 def extract_text_from_image(image_bytes):
@@ -125,19 +156,6 @@ def download_pdf(content):
     output_file.seek(0)
     return output_file
 
-# Function to download as PowerPoint
-def download_ppt(content):
-    prs = Presentation()
-    slide = prs.slides.add_slide(prs.slide_layouts[1])
-    textbox = slide.shapes.add_textbox(left=Inches(1), top=Inches(1), width=Inches(8), height=Inches(5))
-    text_frame = textbox.text_frame
-    p = text_frame.add_paragraph()
-    p.text = content
-    output_file = io.BytesIO()
-    prs.save(output_file)
-    output_file.seek(0)
-    return output_file
-
 # Function to download as Excel
 def download_excel(content):
     df = pd.DataFrame({"Content": [content]})
@@ -145,21 +163,6 @@ def download_excel(content):
     df.to_excel(output_file, index=False)
     output_file.seek(0)
     return output_file
-
-# Function to convert text to image
-def text_to_image(text, image_format):
-    try:
-        image = Image.new('RGB', (800, 600), color='white')
-        draw = ImageDraw.Draw(image)
-        font = ImageFont.load_default()
-        draw.text((10, 10), text, fill='black', font=font)
-        output_file = io.BytesIO()
-        image.save(output_file, format=image_format)
-        output_file.seek(0)
-        return output_file
-    except Exception as e:
-        st.error(f"Error converting text to image: {e}")
-        return None
 
 # Initialize session state variables
 if 'page' not in st.session_state:
@@ -293,7 +296,7 @@ st.markdown(theme_styles[st.session_state['theme']], unsafe_allow_html=True)
 
 # Main and About page content
 def main_page():
-    st.title("Bibliography Extraction and File Conversion Tool")
+    st.title("Bibliography Extraction Tool")
     
     menu = ["Extract Bibliography", "Summarize Text"]
     choice = st.sidebar.selectbox("Choose an action", menu)
@@ -301,171 +304,53 @@ def main_page():
     if choice == "Extract Bibliography":
         st.subheader("Upload a file to extract bibliography information")
 
-        uploaded_file = st.file_uploader("Choose a file", type=["pdf", "png", "jpg", "jpeg"])
-
+        uploaded_file = st.file_uploader("Choose a file", type=["txt", "pdf", "docx", "pptx", "jpg", "jpeg", "png"])
         if uploaded_file is not None:
-            if uploaded_file.type == "application/pdf":
-                text = extract_text_from_pdf(uploaded_file.read())
-            elif uploaded_file.type in ["image/png", "image/jpeg", "image/jpg"]:
-                text = extract_text_from_image(uploaded_file.read())
+            file_type = uploaded_file.type
+            file_bytes = uploaded_file.read()
+
+            if file_type == "image/jpeg" or file_type == "image/png" or file_type == "image/jpg":
+                text = extract_text_from_image(file_bytes)
+            elif file_type == "application/pdf":
+                text = extract_text_from_pdf(file_bytes)
+            elif file_type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+                doc = docx.Document(io.BytesIO(file_bytes))
+                text = "\n".join([para.text for para in doc.paragraphs])
+            elif file_type == "application/vnd.ms-powerpoint":
+                presentation = Presentation(io.BytesIO(file_bytes))
+                text = "\n".join([slide.shapes.title.text if slide.shapes.title else "" for slide in presentation.slides])
             else:
-                st.error("Unsupported file type.")
-                return
+                text = file_bytes.decode("utf-8")
+            
+            st.subheader("Extracted Text:")
+            st.text_area("Text", value=text, height=300)
 
-            if text:
-                bibliography_info = extract_bibliography_info(text)
-                formatted_bibliography = format_bibliography_info(bibliography_info)
+            bibliography_info = extract_bibliography_info(text)
+            st.subheader("Extracted Bibliography Information:")
+            st.write(f"Title: {bibliography_info['title']}")
+            st.write(f"Author: {bibliography_info['author']}")
+            st.write(f"Year: {bibliography_info['year']}")
 
-                st.markdown("### Extracted Bibliography Information")
-                st.text_area("Extracted Text", value=text, height=300)
+            download_format = st.selectbox("Download Format", ["Word", "PDF", "PowerPoint", "Excel"])
 
-                st.markdown("### Extracted Bibliography Details")
-                st.write(f"**Title:** {bibliography_info['title']}")
-                st.write(f"**Author:** {bibliography_info['author']}")
-                st.write(f"**Year:** {bibliography_info['year']}")
-
-                # File name input and save button
-                col1, col2 = st.columns([4, 1])
-
-                with col1:
-                    file_name_input = st.text_input("Enter a file name for download:", value=st.session_state.file_name, key="file_name_input")
-
-                with col2:
-                    if st.button("Save"):
-                        st.session_state.file_name = file_name_input  # Update the session state with the entered file name
-                        st.success(f"File name saved as: {st.session_state.file_name}")
-
-                st.markdown("### Download Extracted Bibliography")
-                download_option = st.selectbox("Choose a format", ["Word", "PDF", "PowerPoint", "Excel", "PNG Image", "JPG Image"])
-
-                if st.button("Download"):
-                    file_name = f"{st.session_state.file_name}"
-
-                    if download_option == "Word":
-                        output = download_word(formatted_bibliography)
-                        st.download_button(label="Download as Word", data=output, file_name=f"{file_name}.docx", mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
-
-                    elif download_option == "PDF":
-                        output = download_pdf(formatted_bibliography)
-                        st.download_button(label="Download as PDF", data=output, file_name=f"{file_name}.pdf", mime="application/pdf")
-
-                    elif download_option == "PowerPoint":
-                        output = download_ppt(formatted_bibliography)
-                        st.download_button(label="Download as PowerPoint", data=output, file_name=f"{file_name}.pptx", mime="application/vnd.openxmlformats-officedocument.presentationml.presentation")
-
-                    elif download_option == "Excel":
-                        output = download_excel(formatted_bibliography)
-                        st.download_button(label="Download as Excel", data=output, file_name=f"{file_name}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-
-                    elif download_option == "PNG Image":
-                        output = text_to_image(formatted_bibliography, "PNG")
-                        if output:
-                            st.download_button(label="Download as PNG Image", data=output, file_name=f"{file_name}.png", mime="image/png")
-
-                    elif download_option == "JPG Image":
-                        output = text_to_image(formatted_bibliography, "JPEG")
-                        if output:
-                            st.download_button(label="Download as JPG Image", data=output, file_name=f"{file_name}.jpg", mime="image/jpeg")
-
+            if download_format == "Word":
+                word_file = download_word(format_bibliography_info(bibliography_info))
+                st.download_button("Download Word File", word_file, file_name=f"{st.session_state['file_name']}.docx")
+            elif download_format == "PDF":
+                pdf_file = download_pdf(format_bibliography_info(bibliography_info))
+                st.download_button("Download PDF File", pdf_file, file_name=f"{st.session_state['file_name']}.pdf")
+            elif download_format == "Excel":
+                excel_file = download_excel(format_bibliography_info(bibliography_info))
+                st.download_button("Download Excel File", excel_file, file_name=f"{st.session_state['file_name']}.xlsx")
+    
     elif choice == "Summarize Text":
-        st.subheader("Upload a file to summarize the content")
+        st.subheader("Enter text to summarize")
+        text_input = st.text_area("Input Text", height=300)
+        if st.button("Summarize"):
+            summary = simple_summarize(text_input)
+            st.subheader("Summary")
+            st.write(summary)
 
-        uploaded_file = st.file_uploader("Choose a file", type=["pdf", "png", "jpg", "jpeg"])
-
-        if uploaded_file is not None:
-            if uploaded_file.type == "application/pdf":
-                text = extract_text_from_pdf(uploaded_file.read())
-            elif uploaded_file.type in ["image/png", "image/jpeg", "image/jpg"]:
-                text = extract_text_from_image(uploaded_file.read())
-            else:
-                st.error("Unsupported file type.")
-                return
-
-            if text:
-                summary = summarize_text(text)
-
-                st.markdown("### Original Text")
-                st.text_area("Original Text", value=text, height=300)
-
-                st.markdown("### Summary")
-                st.text_area("Summary", value=summary, height=150)
-
-                # File name input and save button
-                col1, col2 = st.columns([4, 1])
-
-                with col1:
-                    file_name_input = st.text_input("Enter a file name for download:", value=st.session_state.file_name, key="file_name_input")
-
-                with col2:
-                    if st.button("Save"):
-                        st.session_state.file_name = file_name_input  # Update the session state with the entered file name
-                        st.success(f"File name saved as: {st.session_state.file_name}")
-
-                st.markdown("### Download Summary")
-                download_option = st.selectbox("Choose a format", ["Word", "PDF", "PowerPoint", "Excel", "PNG Image", "JPG Image"])
-
-                if st.button("Download"):
-                    file_name = f"{st.session_state.file_name}"
-
-                    if download_option == "Word":
-                        output = download_word(summary)
-                        st.download_button(label="Download as Word", data=output, file_name=f"{file_name}.docx", mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
-
-                    elif download_option == "PDF":
-                        output = download_pdf(summary)
-                        st.download_button(label="Download as PDF", data=output, file_name=f"{file_name}.pdf", mime="application/pdf")
-
-                    elif download_option == "PowerPoint":
-                        output = download_ppt(summary)
-                        st.download_button(label="Download as PowerPoint", data=output, file_name=f"{file_name}.pptx", mime="application/vnd.openxmlformats-officedocument.presentationml.presentation")
-
-                    elif download_option == "Excel":
-                        output = download_excel(summary)
-                        st.download_button(label="Download as Excel", data=output, file_name=f"{file_name}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-
-                    elif download_option == "PNG Image":
-                        output = text_to_image(summary, "PNG")
-                        if output:
-                            st.download_button(label="Download as PNG Image", data=output, file_name=f"{file_name}.png", mime="image/png")
-
-                    elif download_option == "JPG Image":
-                        output = text_to_image(summary, "JPEG")
-                        if output:
-                            st.download_button(label="Download as JPG Image", data=output, file_name=f"{file_name}.jpg", mime="image/jpeg")
-
-def about_page():
-    st.title("About This App")
-    st.markdown("""
-    ## Overview
-    This application allows you to extract bibliography information and summarize text from various file formats including PDFs and images.
-
-    ## Features
-    - **Extract Bibliography**: Upload a PDF or image to extract bibliography details such as title, author, and year.
-    - **Summarize Text**: Upload a file to get a summarized version of the text content.
-
-    ## Technologies Used
-    - **Streamlit**: For building the web application interface.
-    - **PyMuPDF**: For extracting text from PDFs.
-    - **Tesseract OCR**: For extracting text from images.
-    - **Transformers**: For text summarization using Hugging Face.
-    - **spaCy**: For advanced text processing.
-
-    ## Contact
-    For any questions or feedback, please reach out to [your.email@example.com](mailto:your.email@example.com).
-
-    ## License
-    This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
-    """)
-
-def main():
-    st.sidebar.title("Navigation")
-    pages = ["Main Page", "About"]
-    choice = st.sidebar.radio("Select Page", pages)
-
-    if choice == "Main Page":
-        main_page()
-    elif choice == "About":
-        about_page()
-
-if __name__ == "__main__":
-    main()
+# Display the main page
+if st.session_state['page'] == 'main':
+    main_page()
