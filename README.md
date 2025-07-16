@@ -75,8 +75,3 @@ streamlit run app.py
 ![example](https://raw.githubusercontent.com/Akki-333/TEXT_EXTRACTION/380065bed721aeaee4d2bde4f971c6fae91ebf6c/example.jpeg)
 
 ---
-
-
-## 📝 License
-
-This project is licensed under the MIT License - feel free to use it!
