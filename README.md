@@ -76,12 +76,6 @@ streamlit run app.py
 
 ---
 
-## ✨ Author
-
-- **Akki-333**  
-  [GitHub Profile](https://github.com/Akki-333)
-
----
 
 ## 📝 License
 
